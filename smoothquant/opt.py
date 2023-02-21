@@ -373,8 +373,16 @@ class Int8OPTDecoder(OPTPreTrainedModel):
         return_dict: Optional[bool] = None,
     ) -> BaseModelOutputWithPast:
         # pad the input to the multiple of 16
-        input_len = input_ids.shape[1]
         from torch.nn.functional import pad
+        original_input_len = input_ids.shape[1]
+        if use_cache:
+            if past_key_values is not None:
+                past_key_values, past_input_ids = past_key_values
+                if past_input_ids is not None:
+                    input_ids = torch.concat(
+                        [past_input_ids, input_ids], dim=1
+                    )
+        input_len = input_ids.shape[1]
         if input_len % 16 != 0:
             # <pad> is 1
             padding_len = 16 - input_len % 16
@@ -391,8 +399,29 @@ class Int8OPTDecoder(OPTPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states
         )
-        # slice the output to the original length
-        if input_len % 16 != 0:
+        if use_cache:
+            if input_len % 16 != 0:
+                past_key = output.past_key_values[0][0]
+                last_16_mod = ((past_key.shape[2] - input_len) // 16) * 16
+                if last_16_mod == 0:
+                    past_key_values = None
+                else:
+                    past_key_values = [
+                        (k[:, :, :last_16_mod], v[:, :, :last_16_mod])
+                        for k, v in output.past_key_values
+                    ]
+                output.past_key_values = (
+                    past_key_values,
+                    input_ids[:, :input_len],
+                )
+            else:
+                output.past_key_values = (output.past_key_values, None)
+            if original_input_len > 1:
+                output.last_hidden_state = output.last_hidden_state[:, :input_len]
+            else:
+                output.last_hidden_state = output.last_hidden_state[:, input_len - 1:input_len]
+        elif input_len % 16 != 0:
+            # slice the output to the original length
             output.last_hidden_state = output.last_hidden_state[:,
                                                                 :input_len, :]
         return output
